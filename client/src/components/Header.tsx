@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import type { User } from '../types';
 import { slackApi } from '../services/api';
-import { ExternalLink, MessageSquare, LogOut, CheckCircle2, BellRing, Activity } from 'lucide-react';
+import { ExternalLink, MessageSquare, LogOut, CheckCircle2, BellRing, Activity, Info } from 'lucide-react';
 
 interface HeaderProps {
   user: User;
   onLogout: () => void;
   onRefresh: () => void;
+  onOpenAbout: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
+export const Header: React.FC<HeaderProps> = ({ user, onLogout, onOpenAbout }) => {
   const [testingSlack, setTestingSlack] = useState(false);
   const [slackMessage, setSlackMessage] = useState<string | null>(null);
 
@@ -73,6 +74,16 @@ export const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
             <span>BullMQ Live Monitor</span>
             <ExternalLink className="w-3 h-3 text-amber-600" />
           </a>
+
+          {/* Architecture & Specs Button */}
+          <button
+            onClick={onOpenAbout}
+            className="flex items-center space-x-1.5 text-xs font-semibold px-3 py-1.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors"
+            title="View system design & architecture specs"
+          >
+            <Info className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Architecture & Specs</span>
+          </button>
 
           {/* Slack Integration Action */}
           {isSlackConnected ? (

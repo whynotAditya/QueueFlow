@@ -7,6 +7,7 @@ import { EmailTable } from './components/EmailTable';
 import { ComposeModal } from './components/ComposeModal';
 import { SearchBar } from './components/SearchBar';
 import { LoginModal } from './components/LoginModal';
+import { AboutModal } from './components/AboutModal';
 import { Plus, Clock, Send, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 export function AppContent() {
@@ -16,6 +17,7 @@ export function AppContent() {
   const [searchResults, setSearchResults] = useState<EmailJob[] | null>(null);
   const [activeTab, setActiveTab] = useState<'scheduled' | 'sent'>('scheduled');
   const [isComposeOpen, setIsComposeOpen] = useState(false);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [banner, setBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -116,7 +118,12 @@ export function AppContent() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <Header user={user} onLogout={handleLogout} onRefresh={loadEmails} />
+      <Header
+        user={user}
+        onLogout={handleLogout}
+        onRefresh={loadEmails}
+        onOpenAbout={() => setIsAboutOpen(true)}
+      />
 
       {/* Slack Banner Notification */}
       {banner && (
@@ -227,6 +234,12 @@ export function AppContent() {
         isOpen={isComposeOpen}
         onClose={() => setIsComposeOpen(false)}
         onScheduled={loadEmails}
+      />
+
+      {/* System Architecture & Engineering Specs Modal */}
+      <AboutModal
+        isOpen={isAboutOpen}
+        onClose={() => setIsAboutOpen(false)}
       />
     </div>
   );
