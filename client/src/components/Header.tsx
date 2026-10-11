@@ -8,24 +8,14 @@ interface HeaderProps {
   onLogout: () => void;
   onRefresh: () => void;
   onOpenAbout: () => void;
+  onOpenSlack: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ user, onLogout, onOpenAbout }) => {
+export const Header: React.FC<HeaderProps> = ({ user, onLogout, onOpenAbout, onOpenSlack }) => {
   const [testingSlack, setTestingSlack] = useState(false);
   const [slackMessage, setSlackMessage] = useState<string | null>(null);
 
   const isSlackConnected = user.slackIntegration?.isActive;
-
-  const handleConnectSlack = async () => {
-    try {
-      const res = await slackApi.getOAuthUrl();
-      if (res.data.url) {
-        window.location.href = res.data.url;
-      }
-    } catch (err: any) {
-      alert('Failed to get Slack OAuth URL: ' + err.message);
-    }
-  };
 
   const handleTestSlack = async () => {
     setTestingSlack(true);
@@ -104,7 +94,7 @@ export const Header: React.FC<HeaderProps> = ({ user, onLogout, onOpenAbout }) =
             </div>
           ) : (
             <button
-              onClick={handleConnectSlack}
+              onClick={onOpenSlack}
               className="flex items-center space-x-1.5 text-xs font-medium px-3 py-1.5 bg-gray-900 text-white rounded-md hover:bg-gray-800 transition-colors shadow-sm"
             >
               <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />

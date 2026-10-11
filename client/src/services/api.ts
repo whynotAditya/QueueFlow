@@ -46,6 +46,8 @@ export const emailApi = {
 export const slackApi = {
   getOAuthUrl: () => api.get('/slack/oauth-url'),
   getStatus: () => api.get('/slack/status'),
+  connectWebhook: (webhookUrl: string, channelName?: string) =>
+    api.post('/slack/webhook', { webhookUrl, channelName }),
   sendTestAlert: () => api.post('/slack/test-alert'),
   disconnect: () => api.post('/slack/disconnect'),
 };

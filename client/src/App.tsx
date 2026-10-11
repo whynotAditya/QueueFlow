@@ -8,6 +8,7 @@ import { ComposeModal } from './components/ComposeModal';
 import { SearchBar } from './components/SearchBar';
 import { LoginModal } from './components/LoginModal';
 import { AboutModal } from './components/AboutModal';
+import { SlackConnectModal } from './components/SlackConnectModal';
 import { Plus, Clock, Send, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 export function AppContent() {
@@ -18,6 +19,7 @@ export function AppContent() {
   const [activeTab, setActiveTab] = useState<'scheduled' | 'sent'>('scheduled');
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [isSlackModalOpen, setIsSlackModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [banner, setBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -123,6 +125,7 @@ export function AppContent() {
         onLogout={handleLogout}
         onRefresh={loadEmails}
         onOpenAbout={() => setIsAboutOpen(true)}
+        onOpenSlack={() => setIsSlackModalOpen(true)}
       />
 
       {/* Slack Banner Notification */}
@@ -240,6 +243,19 @@ export function AppContent() {
       <AboutModal
         isOpen={isAboutOpen}
         onClose={() => setIsAboutOpen(false)}
+      />
+
+      {/* Slack Integration Connect Modal */}
+      <SlackConnectModal
+        isOpen={isSlackModalOpen}
+        onClose={() => setIsSlackModalOpen(false)}
+        onSuccess={() => {
+          authApi.getMe().then((res) => setUser(res.data.user));
+          setBanner({
+            type: 'success',
+            message: 'Slack workspace activated! Test alerts or rate-limit hits will now post to your channel.',
+          });
+        }}
       />
     </div>
   );

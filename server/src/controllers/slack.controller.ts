@@ -101,9 +101,37 @@ export class SlackController {
         where: { userId },
       });
 
-      res.json({ message: 'Slack disconnected successfully' });
+  /**
+   * Directly save a Slack Incoming Webhook URL
+   */
+  static async connectWebhook(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user!.id;
+      const { webhookUrl, channelName } = req.body;
+
+      if (!webhookUrl || !webhookUrl.startsWith('https://hooks.slack.com/')) {
+        res.status(400).json({ error: 'Invalid Slack webhook URL. Must start with https://hooks.slack.com/' });
+        return;
+      }
+
+      const integration = await prisma.slackIntegration.upsert({
+        where: { userId },
+        update: {
+          incomingWebhookUrl: webhookUrl,
+          channelName: channelName || '#outreach-alerts',
+          isActive: true,
+        },
+        create: {
+          userId,
+          incomingWebhookUrl: webhookUrl,
+          channelName: channelName || '#outreach-alerts',
+          isActive: true,
+        },
+      });
+
+      res.json({ message: 'Slack webhook connected successfully', integration });
     } catch (err: any) {
-      res.status(500).json({ error: 'Failed to disconnect Slack', details: err.message });
+      res.status(500).json({ error: 'Failed to connect Slack webhook', details: err.message });
     }
   }
 }
