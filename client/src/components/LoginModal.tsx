@@ -34,7 +34,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
       name: 'Aditya Patel',
       email: 'collabwithadityapatel@gmail.com',
       avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Aditya',
-      createdAt: new Date().toISOString(),
     };
     const fallbackToken = 'dev_authenticated_session_token';
     localStorage.setItem('queueflow_token', fallbackToken);
