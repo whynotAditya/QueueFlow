@@ -54,7 +54,7 @@ export const Header: React.FC<HeaderProps> = ({ user, onLogout, onOpenAbout, onO
         <div className="flex items-center space-x-4">
           {/* Live BullMQ Dashboard Link */}
           <a
-            href="http://localhost:5000/admin/queues"
+            href={import.meta.env.VITE_QUEUE_URL || "https://queueflow-d559.onrender.com/admin/queues"}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center space-x-1.5 text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors"
