@@ -100,6 +100,11 @@ export class SlackController {
       await prisma.slackIntegration.deleteMany({
         where: { userId },
       });
+      res.json({ message: 'Slack disconnected successfully' });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to disconnect Slack', details: err.message });
+    }
+  }
 
   /**
    * Directly save a Slack Incoming Webhook URL
