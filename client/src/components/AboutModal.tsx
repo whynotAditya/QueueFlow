@@ -42,7 +42,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
               <span>Core Architectural Mission</span>
             </h3>
             <p className="leading-relaxed">
-              Engineered to decouple high-volume email ingestion from SMTP delivery, eliminating HTTP timeouts and memory starvation. Built for high-growth outreach platforms (ReachInbox / Outbox Labs) requiring sub-second response times, fault-tolerant persistence across crashes, and strict ISP rate-limiting compliance.
+              Engineered to decouple high-volume email ingestion from SMTP delivery, eliminating HTTP timeouts and memory starvation. Built for high-throughput outreach infrastructure requiring sub-second response times, fault-tolerant persistence across worker restarts, strict rate-limiting compliance, and isolated Dead Letter Queues (DLQ).
             </p>
           </div>
 
@@ -138,7 +138,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
             </div>
             <div className="flex items-center space-x-2">
               <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-emerald-700 font-semibold">Production Ready for ReachInbox</span>
+              <span className="text-emerald-700 font-semibold">Production Grade Distributed Architecture</span>
             </div>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import { Worker, Job } from 'bullmq';
 import { redisConnectionOptions } from '../config/redis.js';
 import { EMAIL_QUEUE_NAME, EmailJobData, emailQueue } from '../queues/email.queue.js';
+import { emailDlq } from '../queues/dlq.queue.js';
 import { EmailService } from '../services/email.service.js';
 import { RateLimiterService } from '../services/rate-limiter.service.js';
 import { ElasticsearchService } from '../services/elasticsearch.service.js';
@@ -96,16 +97,48 @@ export const emailWorker = new Worker<EmailJobData>(
     } catch (error: any) {
       console.error(`[Worker] Delivery failed for job ${job.id}:`, error.message);
 
-      // If this was the last attempt, mark as permanently FAILED
-      if (job.attemptsMade + 1 >= (job.opts.attempts || 3)) {
-        await prisma.emailJob.update({
-          where: { id: emailJobId },
-          data: {
-            status: 'FAILED',
-            failedReason: error.message,
-          },
-        });
-        await ElasticsearchService.updateEmailStatus(emailJobId, 'FAILED');
+      // If this was the final attempt, mark as permanently FAILED and isolate into DLQ
+      const maxAttempts = job.opts.attempts || 3;
+      const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts;
+
+      if (isFinalAttempt) {
+        console.warn(`[Worker] Job ${job.id} exhausted all ${maxAttempts} attempts. Moving to Dead Letter Queue (DLQ).`);
+
+        try {
+          // Update PostgreSQL source-of-truth status
+          await prisma.emailJob.update({
+            where: { id: emailJobId },
+            data: {
+              status: 'FAILED',
+              failedReason: error.message,
+            },
+          });
+          await ElasticsearchService.updateEmailStatus(emailJobId, 'FAILED');
+
+          // Push into Dead Letter Queue for isolation, monitoring, and audit
+          await emailDlq.add(
+            'poison-pill',
+            {
+              originalJobId: job.id,
+              emailJobId,
+              userId,
+              senderId,
+              recipient,
+              subject,
+              body,
+              scheduledAt: job.data.scheduledAt,
+              errorReason: error.message,
+              failedAt: new Date().toISOString(),
+              attemptsMade: job.attemptsMade + 1,
+            },
+            {
+              jobId: `dlq-${emailJobId}-${Date.now()}`,
+            }
+          );
+          console.log(`[DLQ] Quarantined job ${job.id} into ${emailDlq.name}`);
+        } catch (dlqErr: any) {
+          console.error(`[DLQ] Failed to route job to DLQ:`, dlqErr.message);
+        }
       }
 
       throw error; // Re-throw to trigger BullMQ exponential backoff if retries left
@@ -122,5 +155,11 @@ emailWorker.on('completed', (job) => {
 });
 
 emailWorker.on('failed', (job, err) => {
-  console.error(`[Worker] Job ${job?.id} failed with error: ${err.message}`);
+  const maxAttempts = job?.opts.attempts || 3;
+  const attempts = (job?.attemptsMade || 0);
+  if (attempts >= maxAttempts) {
+    console.error(`[Worker] ☠️ Job ${job?.id} permanently failed after ${attempts} attempts. Quarantined in DLQ.`);
+  } else {
+    console.warn(`[Worker] ⚠️ Job ${job?.id} attempt ${attempts}/${maxAttempts} failed: ${err.message}. Retrying with exponential backoff...`);
+  }
 });

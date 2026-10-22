@@ -1,7 +1,7 @@
 {
   "name": "queueflow-server",
   "version": "1.0.0",
-  "description": "Distributed Asynchronous Email & Task Scheduler for ReachInbox",
+  "description": "Distributed Asynchronous Email & Task Scheduler with BullMQ, Redis, PostgreSQL, and DLQ",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

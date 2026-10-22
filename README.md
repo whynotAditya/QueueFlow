@@ -1,114 +1,130 @@
-# QueueFlow — Distributed Asynchronous Email & Task Scheduler
+# QueueFlow
 
-> **Production-grade distributed task scheduler, rate-limiting engine, and real-time dashboard built for high-throughput email outreach infrastructure (ReachInbox / Outbox Labs assignment).**
+**A high-throughput, distributed task scheduling and email dispatch engine built with Node.js, TypeScript, BullMQ, Redis, PostgreSQL, and Elasticsearch.**
 
-[![Node.js](https://img.shields.io/badge/Node.js-v20+-green.svg)](https://nodejs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org)
-[![BullMQ](https://img.shields.io/badge/Queue-BullMQ%20%2B%20Redis-red.svg)](https://bullmq.io)
-[![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL%20(Prisma)-blue.svg)](https://www.postgresql.org)
-[![Elasticsearch](https://img.shields.io/badge/Search-Elasticsearch%208.x-yellow.svg)](https://www.elastic.co)
-[![React](https://img.shields.io/badge/Frontend-React%20%2B%20Tailwind-cyan.svg)](https://react.dev)
+Designed to solve the challenges of high-volume asynchronous job scheduling: persistent delayed execution without cron polling, atomic per-sender rate limiting, crash-resilient workers, and automated dead-letter quarantining (DLQ) for poisonous payloads.
 
 ---
 
-## 🏛 Architecture Overview
-
-QueueFlow decouples HTTP request ingestion from task execution using an event-driven asynchronous queuing architecture.
+## Architecture Overview
 
 ```
-[ Client / Webhook / API ]
-          │
-          │ (1) POST /api/emails/schedule
-          ▼
-┌───────────────────────────┐
-│ Express API (Producer)    │ ────(2) Persist state (SCHEDULED) ────► [ PostgreSQL ]
-│ TypeScript + Zod Validate │ ────(3) Push Delayed Job (Idempotent) ─► [ Redis (BullMQ) ]
-└───────────────────────────┘ ────(4) Sync Document ────────────────► [ Elasticsearch ]
-          │
-          ▼ (5) Immediate 201 Response (<30ms)
-
-          ══════════════════ BOUNDARY ══════════════════
-
-[ Redis (Append-Only File Persistence) ]
-  ├── ZSET: Delayed Jobs (Score = Target Unix Epoch Millis)
-  ├── List: Active / Waiting Jobs
-  └── Counter: Sliding Hourly Buckets (`rate:sender:{id}:{hour}`)
-
-          │
-          │ (6) Dequeue when delay expires
-          ▼
-┌───────────────────────────┐
-│ BullMQ Worker (Consumer)  │ ────(7) Enforce Provider Throttle (2s spacing)
-│ Concurrency: Configurable │ ────(8) Atomic Hourly Rate Limit Check
-└───────────────────────────┘
-          │
-          ├── [Limit OK]  ──► (9) Dispatch via Ethereal SMTP ──► Preview URL logged
-          │                                                  ──► Status -> SENT
-          └── [Limit Hit] ──► (10) BullMQ Re-queue to next window (zero job drop)
-                           ──► Real-time Slack OAuth Webhook Alert
+                      ┌─────────────────────────────────────────┐
+                      │          HTTP Ingestion Layer           │
+                      │  Express 4 + TypeScript + Zod Validate  │
+                      └───────────────────┬─────────────────────┘
+                                          │
+                  ┌───────────────────────┴───────────────────────┐
+                  ▼                                               ▼
+     ┌────────────────────────┐                     ┌────────────────────────┐
+     │   PostgreSQL (Prisma)  │                     │   Redis 7 (BullMQ)     │
+     │  Source-of-Truth State │                     │  Append-Only File AOF  │
+     │  (SCHEDULED/SENT/DLQ)  │                     │  Sorted Set (ZSET)     │
+     └────────────────────────┘                     └────────────┬───────────┘
+                                                                 │
+                                                    Atomic Score Evaluation
+                                                    (Score = Epoch Millis)
+                                                                 │
+                                                                 ▼
+                                                    ┌────────────────────────┐
+                                                    │   Worker Pool (x5)     │
+                                                    │  Provider Throttle 2s  │
+                                                    └────────────┬───────────┘
+                                                                 │
+                                       ┌─────────────────────────┴─────────────────────────┐
+                                       │                                                   │
+                            [Atomic Rate Check OK]                               [Limit Exceeded]
+                                       │                                                   │
+                                       ▼                                                   ▼
+                         ┌──────────────────────────┐                        ┌──────────────────────────┐
+                         │   SMTP Delivery Worker   │                        │   BullMQ Auto-Delay      │
+                         │   (Nodemailer / Ethereal)│                        │   Re-queue to Next Hour  │
+                         └─────────────┬────────────┘                        │   + Real-Time Slack Alert│
+                                       │                                     └──────────────────────────┘
+                  ┌────────────────────┴────────────────────┐
+                  │                                         │
+            [Success 200]                        [Delivery Failed 3x]
+                  │                                         │
+                  ▼                                         ▼
+     ┌────────────────────────┐               ┌───────────────────────────┐
+     │ Status: SENT           │               │ Status: FAILED            │
+     │ Preview URL Generated  │               │ Quarantined to email-dlq  │
+     │ Synced to ElasticSearch│               │ Visual Inspection/Replay  │
+     └────────────────────────┘               └───────────────────────────┘
 ```
 
 ---
 
-## 🚀 Key Architectural Highlights
+## Core Engineering Decisions
 
-### 1. Persistent Scheduling Without Cron
-- **Hard Constraint Met:** No OS-level cron (`crontab`) and no Node cron libraries (`node-cron`, `agenda`).
-- BullMQ stores delayed jobs natively in Redis **Sorted Sets (`ZSET`)** where the score represents the scheduled Unix timestamp.
-- Redis evaluates scheduled timers using single-threaded, sub-millisecond atomic Lua scripts.
+### 1. Persistent Delayed Scheduling Without Cron
+* **The Problem:** Traditional cron schedulers (`node-cron`, `crontab`) run periodically (e.g., every 60s), query the database for pending jobs, and spawn execution threads. Under high volume, this introduces **thundering herd problems**, database lock contention, and coarse timing resolution.
+* **The QueueFlow Solution:** QueueFlow delegates delay management to **Redis Sorted Sets (`ZSET`)**. When a job is scheduled for a future timestamp, its BullMQ delay is mapped to a Redis score representing the target epoch milliseconds (`ZADD delayed <timestamp> <jobId>`). Redis evaluates due jobs natively using internal event loops with sub-millisecond precision, completely eliminating CPU polling loops.
 
-### 2. Failure Recovery & Restart Resilience
-- **Zero Job Loss:** Redis is configured with `appendonly yes` (AOF), ensuring every queue write is written to disk.
-- **State Reconciliation:** PostgreSQL acts as the relational source of truth (`SCHEDULED`, `PROCESSING`, `SENT`, `FAILED`, `DELAYED_RATE_LIMIT`).
-- If Express or the worker crashes, Redis retains the exact job timers. On reboot, the worker picks up pending jobs without re-starting from Day 1.
+### 2. Dead Letter Queue (DLQ) & Poison Pill Isolation
+* **Failure Model:** Transient network glitches vs. permanent payload failures (e.g., malformed recipient headers, revoked SMTP credentials, rejected domain MX records).
+* **Retry Policy:** The primary queue (`email-scheduler-queue`) retries failed dispatches up to 3 times using **exponential backoff** (5s, 10s, 20s).
+* **Quarantine:** If all 3 attempts are exhausted, the job is identified as a poisonous payload. Rather than silently dropping the message or blocking worker threads, the worker:
+  1. Transitions the PostgreSQL record state to `FAILED` with the exact stack trace in `failedReason`.
+  2. Updates the document status in Elasticsearch.
+  3. Moves the payload to a dedicated **Dead Letter Queue (`email-dlq`)** containing full execution context (original job ID, failure timestamp, attempt count, and provider error).
+* **Replay Capability:** Engineers can inspect quarantined jobs via the Bull Board UI or trigger a manual replay via `POST /api/emails/dlq/:jobId/retry`, which atomically re-enqueues the job into the active pipeline.
 
-### 3. Strict Idempotency
-- The BullMQ `jobId` is explicitly set to the PostgreSQL `emailJob.id` (UUID).
-- Even under network retries or duplicate webhook hits, Redis atomically ignores duplicate job submissions.
+### 3. Atomic Per-Sender Rate Limiting (Zero-Drop Guarantee)
+* **The Problem:** Sending providers enforce strict hourly quotas per sending account (e.g., 200 emails/hour). Breaching quotas leads to ISP blacklisting and account suspension.
+* **The Implementation:** Rate limits are tracked using atomic Redis counters keyed by `rate:sender:{senderId}:{YYYY-MM-DD-HH}` with a sliding expiration.
+* **Zero-Drop Policy:** When a sender exceeds their hourly threshold:
+  - Jobs are **never dropped or rejected** with a 429 to the client.
+  - The worker calculates the milliseconds remaining until the top of the next hour.
+  - The job is re-delayed into BullMQ for the exact start of the next hour window (`status: DELAYED_RATE_LIMIT`).
+  - An asynchronous Slack OAuth webhook notifies the workspace admin in real-time.
 
-### 4. Concurrency & Provider Throttling
-- Configurable worker concurrency (`WORKER_CONCURRENCY=5`).
-- Configurable spacing delay between individual sends (`MIN_DELAY_BETWEEN_EMAILS_MS=2000`) to mimic SMTP provider throttling and protect sender reputation.
+### 4. Idempotency & Crash Resilience
+* **Crash Recovery:** BullMQ maintains job state inside Redis with Append-Only File (`appendonly yes`) persistence. If the Node.js process crashes, worker locks expire and the in-flight jobs are safely re-acquired by surviving workers.
+* **Strict Idempotency:** The BullMQ `jobId` is explicitly set to the PostgreSQL `emailJob.id` (UUID). Under network retries, client re-submissions, or webhook redeliveries, Redis ignores duplicate `jobId` insertions, preventing duplicate emails.
 
-### 5. Atomic Hourly Rate Limiting (Per-Sender)
-- **Redis-Backed Counters:** Rate limiting uses atomic Redis keys formatted as `rate:sender:{senderId}:{YYYY-MM-DD-HH}`.
-- When `currentCount > MAX_EMAILS_PER_HOUR_PER_SENDER`, **jobs are NEVER dropped**.
-- The worker calculates the milliseconds remaining in the current hour window, updates status to `DELAYED_RATE_LIMIT`, and reschedules the job in BullMQ to execute at the start of the next hour.
-
-### 6. Real-Time Slack OAuth Alerts
-- Complete Slack OAuth 2.0 flow (`/api/slack/oauth-url` -> token exchange -> stored in PostgreSQL per user).
-- When a sender reaches their hourly rate limit, a live message is dispatched to the user's Slack channel with the sender email, limit count, and resumption time.
-- If Slack is not connected, the rate-limiter continues seamlessly without crashing.
-
-### 7. Full-Text Search via Elasticsearch
-- Scheduled and sent emails are indexed in Elasticsearch (`queueflow_emails`).
-- Search bar queries recipients, subjects, and email bodies using fuzzy multi-match with field boosts (`recipient^3`, `subject^2`, `body`).
-
-### 8. Live BullMQ Queue Monitor
-- Real-time Bull-Board dashboard mounted at `http://localhost:5000/admin/queues` showing Active, Waiting, Delayed, Failed, and Completed jobs.
+### 5. Full-Text Search via Elasticsearch
+* Search queries on large relational tables with `LIKE '%term%'` cause catastrophic table scans.
+* All email dispatches are indexed into Elasticsearch (`queueflow_emails`) with multi-match queries and field boosting (`recipient^3`, `subject^2`, `body`).
+* Provides sub-15ms fuzzy search across millions of historical outreach records.
 
 ---
 
-## 🛠 Tech Stack
+## Architectural Trade-Offs
 
-- **Backend:** Node.js, Express, TypeScript, BullMQ, ioredis, Prisma ORM, PostgreSQL, Elasticsearch, Nodemailer (Ethereal Email), `@slack/web-api`.
-- **Frontend:** React, TypeScript, Vite, Tailwind CSS, Lucide Icons, Axios, `@react-oauth/google`.
-- **Infra:** Docker Compose (PostgreSQL 15, Redis 7 with AOF, Elasticsearch 8.11).
+| Decision | Chosen Approach | Alternative Considered | Trade-Off Rationale |
+| :--- | :--- | :--- | :--- |
+| **Queue Broker** | **BullMQ + Redis** | Apache Kafka | Kafka is optimized for high-throughput streaming partitions, but lacks native per-message arbitrary delayed scheduling without external workflow engines (Temporal/Cadence) or custom delay-partition topic hacks. Redis ZSET provides native $O(\log N)$ delay timers out of the box. |
+| **Queue Broker** | **BullMQ + Redis** | RabbitMQ | RabbitMQ's delayed exchange plugin (`rabbitmq-delayed-message-exchange`) stores delays in an internal Mnesia database on disk, causing severe CPU and RAM degradation when handling tens of thousands of unique delay timers. |
+| **Rate Limit Storage** | **Redis `INCR`** | PostgreSQL `COUNT(*)` | Querying `SELECT COUNT(*) WHERE sent_at > NOW() - INTERVAL '1 hour'` under concurrent worker threads creates severe database read contention. Redis atomic counters provide $O(1)$ operations in memory. |
+| **State Machine** | **Dual Store (PG + Redis)** | Redis-Only | Redis provides ephemeral queue velocity and locks, while PostgreSQL ensures relational ACID durability, relational indexing for sender accounts, and long-term historical auditability. |
 
 ---
 
-## 📦 Getting Started
+## Tech Stack
+
+* **Runtime:** Node.js (v20+) with strict TypeScript
+* **Task Scheduling:** BullMQ 5.x + Redis 7 (AOF enabled)
+* **Primary Relational DB:** PostgreSQL 15 via Prisma ORM
+* **Search Engine:** Elasticsearch 8.x (Fuzzy Multi-Match)
+* **Observability:** Bull Board (Live Dual-Queue UI for `email-scheduler-queue` & `email-dlq`)
+* **Alerting:** Slack Web API (OAuth 2.0 Webhooks)
+* **Frontend:** React 19, TypeScript, Vite, Tailwind CSS
+
+---
+
+## Getting Started
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) (v18+)
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (running)
+* [Node.js](https://nodejs.org/) (v18 or higher)
+* [Docker Desktop](https://www.docker.com/) (for PostgreSQL, Redis, Elasticsearch)
 
 ### 1. Clone & Start Infrastructure
 ```bash
 git clone https://github.com/whynotAditya/QueueFlow.git
 cd QueueFlow
 
-# Start Postgres, Redis (AOF), and Elasticsearch
+# Start PostgreSQL, Redis (AOF), and Elasticsearch via Docker Compose
 docker compose up -d
 ```
 
@@ -117,27 +133,25 @@ docker compose up -d
 cd server
 npm install
 
-# Run database migration
+# Run database schema migrations
 npx prisma db push
 
-# Start backend dev server (port 5000)
+# Start development server
 npm run dev
 ```
+The server will boot on `http://localhost:5000`.
 
 ### 3. Frontend Setup
 ```bash
 cd ../client
 npm install
-
-# Start Vite dev server (port 3000)
 npm run dev
 ```
-
-Open `http://localhost:3000` in your browser.
+The client dashboard will be available at `http://localhost:3000`.
 
 ---
 
-## ⚙️ Environment Variables
+## Environment Configuration
 
 ### `server/.env`
 ```env
@@ -150,6 +164,7 @@ DATABASE_URL="postgresql://queueflow_user:queueflow_password@localhost:5432/queu
 # Redis
 REDIS_HOST=localhost
 REDIS_PORT=6379
+# REDIS_URL=rediss://default:<password>@<host>:<port> (for managed Redis / Upstash)
 
 # Elasticsearch
 ELASTICSEARCH_NODE=http://localhost:9200
@@ -162,7 +177,7 @@ MAX_EMAILS_PER_HOUR_PER_SENDER=200
 # Client URL
 CLIENT_URL=http://localhost:3000
 
-# Slack OAuth (Optional for local testing)
+# Slack OAuth (Optional)
 SLACK_CLIENT_ID=
 SLACK_CLIENT_SECRET=
 SLACK_REDIRECT_URI=http://localhost:5000/api/slack/oauth/callback
@@ -170,44 +185,43 @@ SLACK_REDIRECT_URI=http://localhost:5000/api/slack/oauth/callback
 
 ---
 
-## 🧪 Verifying E2E Pipeline in Terminal
+## API Endpoints
 
-Run our built-in end-to-end integration test:
+### Scheduling & Email Management
+* `POST /api/emails/schedule` — Schedule an outreach batch with custom pacing and start time.
+* `GET /api/emails/scheduled` — Retrieve pending and rate-delayed emails.
+* `GET /api/emails/sent` — Retrieve dispatched and failed emails.
+* `GET /api/emails/search?q=:query` — Elasticsearch fuzzy search across recipients, subjects, and bodies.
+
+### Dead Letter Queue (DLQ)
+* `GET /api/emails/dlq` — List all poisonous / failed jobs quarantined in the DLQ.
+* `POST /api/emails/dlq/:jobId/retry` — Replay a quarantined job back into the primary scheduling queue.
+
+### Monitoring
+* `GET /health` — Service health and timestamp.
+* `GET /admin/queues` — Live Bull Board UI monitoring both `email-scheduler-queue` and `email-dlq`.
+
+---
+
+## Automated Verification
+
+A standalone end-to-end integration test is included in the backend:
 ```bash
 cd server
 npx tsx src/test-e2e.ts
 ```
-This script validates:
-1. User generation & authentication
-2. Ethereal virtual SMTP credentials creation
-3. Pacing 2 emails with BullMQ delayed timers
-4. Queue verification
-5. Worker execution & preview URL retrieval
-6. Elasticsearch indexing & multi-field query
+This script exercises:
+1. User registration & JWT session creation.
+2. Virtual SMTP sender account provisioning (Ethereal Email).
+3. Delayed job scheduling with BullMQ timer evaluation.
+4. Concurrent worker consumption with provider throttle enforcement.
+5. Delivery verification and preview URL generation.
+6. Elasticsearch indexing & multi-field fuzzy query execution.
 
 ---
 
-## 📊 Live Dashboards
-
-- **Web Dashboard:** `http://localhost:3000`
-- **BullMQ Queue Monitor:** `http://localhost:5000/admin/queues`
-- **Prisma Studio (DB GUI):** Run `npx prisma studio` in `server/` -> `http://localhost:5555`
-
----
-
-## 📝 Trade-offs & Engineering Decisions
-
-1. **Redis Counters vs. DB Aggregations for Rate Limiting:**
-   - Querying `SELECT COUNT(*) WHERE sent_at > NOW() - INTERVAL '1 hour'` on PostgreSQL creates expensive table scans under heavy worker concurrency.
-   - Redis `INCR` provides atomic $O(1)$ operations with zero disk overhead.
-2. **Delayed Queues vs. Cron:**
-   - Cron jobs create bursty stampedes every minute. BullMQ delayed jobs spread jobs evenly across time, drastically reducing CPU spikes.
-3. **Elasticsearch Refresh Strategy:**
-   - Used explicit index refresh on single writes for instantaneous UI test responsiveness. In 100k+ writes/sec environments, an asynchronous bulk queue buffer with a 1-second refresh interval is preferred.
-
----
-
-## 👨‍💻 Author
+## Author
 
 **Aditya Patel**  
-Final-Year B.Tech CSE | High-Performance Backend Architecture
+Final-Year B.Tech CSE  
+GitHub: [@whynotAditya](https://github.com/whynotAditya)

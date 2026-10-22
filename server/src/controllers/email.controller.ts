@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../config/db.js';
 import { emailQueue } from '../queues/email.queue.js';
+import { emailDlq } from '../queues/dlq.queue.js';
 import { ElasticsearchService } from '../services/elasticsearch.service.js';
 import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
 
@@ -210,6 +211,91 @@ export class EmailController {
       res.json(results);
     } catch (err: any) {
       res.status(500).json({ error: 'Search failed', details: err.message });
+    }
+  }
+
+  /**
+   * Get quarantined jobs in the Dead Letter Queue
+   */
+  static async getDlqJobs(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user!.id;
+      const dlqJobs = await emailDlq.getJobs(['waiting', 'active', 'completed', 'failed', 'delayed'], 0, 50);
+      const userDlqJobs = dlqJobs
+        .filter((job) => job?.data?.userId === userId)
+        .map((job) => ({
+          dlqJobId: job.id,
+          originalJobId: job.data.originalJobId,
+          emailJobId: job.data.emailJobId,
+          recipient: job.data.recipient,
+          subject: job.data.subject,
+          errorReason: job.data.errorReason,
+          failedAt: job.data.failedAt,
+          attemptsMade: job.data.attemptsMade,
+        }));
+
+      res.json({
+        total: userDlqJobs.length,
+        jobs: userDlqJobs,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to fetch DLQ jobs', details: err.message });
+    }
+  }
+
+  /**
+   * Replay/Retry a quarantined DLQ job back into the primary scheduling queue
+   */
+  static async retryDlqJob(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user!.id;
+      const { jobId } = req.params;
+
+      const job = await emailDlq.getJob(jobId);
+      if (!job || job.data?.userId !== userId) {
+        res.status(404).json({ error: 'DLQ job not found or does not belong to user' });
+        return;
+      }
+
+      const { emailJobId, senderId, recipient, subject, body } = job.data;
+
+      // Reset PostgreSQL status to SCHEDULED
+      await prisma.emailJob.update({
+        where: { id: emailJobId },
+        data: {
+          status: 'SCHEDULED',
+          failedReason: null,
+          scheduledAt: new Date(),
+        },
+      });
+
+      // Re-enqueue into primary BullMQ email queue
+      const replayedBullJob = await emailQueue.add(
+        'send-scheduled-email',
+        {
+          emailJobId,
+          userId,
+          senderId,
+          recipient,
+          subject,
+          body,
+          scheduledAt: new Date().toISOString(),
+        },
+        {
+          jobId: `${emailJobId}-replay-${Date.now()}`,
+          delay: 0,
+        }
+      );
+
+      // Remove from DLQ
+      await job.remove();
+
+      res.json({
+        message: 'Successfully replayed DLQ job into primary scheduler queue',
+        newJobId: replayedBullJob.id,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to replay DLQ job', details: err.message });
     }
   }
 }

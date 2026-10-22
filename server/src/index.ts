@@ -46,6 +46,22 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Global error handling middleware
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('[QueueFlow Error]', err?.message || err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  const isWrongPass = err?.message?.includes('WRONGPASS');
+  res.status(500).json({
+    error: 'Internal Server Error',
+    message: err?.message || 'Unknown error occurred',
+    hint: isWrongPass
+      ? 'Redis authentication failed (WRONGPASS). Check REDIS_URL in environment variables.'
+      : undefined,
+  });
+});
+
 // Initialize search engine and start HTTP server
 async function startServer() {
   try {

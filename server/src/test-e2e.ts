@@ -8,7 +8,7 @@ async function runEndToEndTest() {
   console.log('--- [QueueFlow E2E Pipeline Verification] ---');
 
   // 1. Create or fetch test user
-  const email = 'aditya.patel@outboxlabs.assignment';
+  const email = 'aditya.patel@queueflow.dev';
   const user = await prisma.user.upsert({
     where: { email },
     update: { name: 'Aditya Patel' },
@@ -18,7 +18,7 @@ async function runEndToEndTest() {
 
   // 2. Create Ethereal test sender account
   console.log('⏳ [2/6] Generating Ethereal SMTP sender account...');
-  const sender = await EmailService.createEtherealSender(user.id, 'Aditya Outbox Labs Sender');
+  const sender = await EmailService.createEtherealSender(user.id, 'Aditya Production Sender');
   console.log(`✅ [2/6] Ethereal sender generated: ${sender.email} on ${sender.smtpHost}`);
 
   // 3. Schedule 2 emails
@@ -36,7 +36,7 @@ async function runEndToEndTest() {
         userId: user.id,
         senderId: sender.id,
         recipient,
-        subject: `ReachInbox Scheduler Demo #${i + 1}`,
+        subject: `QueueFlow Distributed Dispatch #${i + 1}`,
         body: `<p>Hello <b>Lead #${i + 1}</b>,</p><p>This is a production test of QueueFlow distributed scheduling engine!</p>`,
         status: 'SCHEDULED',
         scheduledAt: scheduledTime,
