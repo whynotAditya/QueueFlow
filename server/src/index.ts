@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { serverAdapter } from './config/bullboard.js';
 import { initElasticsearchIndex } from './config/elasticsearch.js';
+import { redisClient, redisConnectionOptions } from './config/redis.js';
 
 // Import routes
 import authRoutes from './routes/auth.routes.js';
@@ -37,11 +38,29 @@ app.use('/api/senders', senderRoutes);
 app.use('/api/emails', emailRoutes);
 app.use('/api/slack', slackRoutes);
 
-// Health check endpoint
-app.get('/health', (req, res) => {
+// Health check endpoint with Redis diagnostics
+app.get('/health', async (req, res) => {
+  let redisStatus = 'checking...';
+  let redisError: string | null = null;
+
+  try {
+    const pong = await redisClient.ping();
+    redisStatus = `connected (${pong})`;
+  } catch (err: any) {
+    redisStatus = 'failed';
+    redisError = err.message;
+  }
+
   res.json({
     status: 'ok',
     service: 'QueueFlow Backend',
+    redis: {
+      status: redisStatus,
+      error: redisError,
+      configuredHost: redisConnectionOptions.host,
+      isTls: !!redisConnectionOptions.tls,
+      hasRedisUrlEnv: !!process.env.REDIS_URL,
+    },
     timestamp: new Date().toISOString(),
   });
 });
