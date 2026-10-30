@@ -31,6 +31,7 @@ app.use(express.json());
 
 // Bull Board UI for queue monitoring
 app.use('/admin/queues', serverAdapter.getRouter());
+app.get('/admin', (_req, res) => res.redirect('/admin/queues'));
 
 // Application API routes
 app.use('/api/auth', authRoutes);
